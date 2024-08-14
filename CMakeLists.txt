@@ -7,7 +7,7 @@ project(ConfigEndpoint VERSION 1.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
-#Find and include Boost
+# Find and include Boost
 find_package(Boost REQUIRED COMPONENTS system thread)
 
 # Find and include jsoncpp
@@ -19,6 +19,11 @@ find_package(OpenSSL REQUIRED)
 
 # Add the executable
 add_executable(ConfigEndpoint src/main.cpp)
+
+# Specify the output directory for the executable
+set_target_properties(ConfigEndpoint PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin"
+)
 
 # Include directories
 target_include_directories(ConfigEndpoint PUBLIC 

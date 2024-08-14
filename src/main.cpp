@@ -1,6 +1,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
+#include <boost/asio/signal_set.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -12,16 +13,37 @@
 #include <openssl/rsa.h>
 #include <openssl/evp.h>
 #include <openssl/err.h>
+#include <filesystem>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <thread>
+#include <csignal>
 
 
 namespace beast = boost::beast;
 namespace http = beast::http;     
 namespace net = boost::asio;      
-namespace ssl = net::ssl;       
+namespace ssl = net::ssl;
+namespace fs = std::filesystem;
 using tcp = net::ip::tcp;  
+
+
+std::string get_config(const std::string& file_path) {
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Could not open JSON file");
+    }
+
+    Json::Value root;
+    file >> root;
+    file.close();
+
+    Json::StreamWriterBuilder writer;
+    std::string json_string = Json::writeString(writer, root);
+
+    return json_string;
+}
 
 
 bool verify_token(const std::string& token, const std::string& public_key) {
@@ -43,29 +65,65 @@ bool verify_token(const std::string& token, const std::string& public_key) {
 
 std::string encrypt(const std::string& message, const std::string& public_key_pem) {
     BIO* bio = BIO_new_mem_buf(public_key_pem.data(), -1);
-    RSA* rsa_public_key = PEM_read_bio_RSA_PUBKEY(bio, nullptr, nullptr, nullptr);
+    EVP_PKEY* evp_public_key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
 
-    if (!rsa_public_key) {
-        std::cerr << "Failed to create RSA public key: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
+    if (!evp_public_key) {
+        std::cerr << "Failed to create EVP public key: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
         return "";
     }
 
-    std::string encrypted(RSA_size(rsa_public_key), '\0');
-    int result = RSA_public_encrypt(
-        message.size(),
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new(evp_public_key, nullptr);
+    if (!ctx) {
+        std::cerr << "Failed to create EVP context: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
+        EVP_PKEY_free(evp_public_key);
+        return "";
+    }
+
+    if (EVP_PKEY_encrypt_init(ctx) <= 0) {
+        std::cerr << "Failed to initialize encryption: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(evp_public_key);
+        return "";
+    }
+
+    if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+        std::cerr << "Failed to set padding: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(evp_public_key);
+        return "";
+    }
+
+    size_t outlen;
+    if (EVP_PKEY_encrypt(
+        ctx, 
+        nullptr, 
+        &outlen, 
         reinterpret_cast<const unsigned char*>(message.c_str()),
-        reinterpret_cast<unsigned char*>(&encrypted[0]),
-        rsa_public_key,
-        RSA_PKCS1_OAEP_PADDING
-    );
-
-    RSA_free(rsa_public_key);
-
-    if (result == -1) {
-        std::cerr << "Encryption failed: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
+        message.size()) <= 0
+    ) {
+        std::cerr << "Failed to determine buffer length: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(evp_public_key);
         return "";
     }
+
+    std::string encrypted(outlen, '\0');
+    if (EVP_PKEY_encrypt(
+        ctx,
+        reinterpret_cast<unsigned char*>(&encrypted[0]),
+        &outlen,
+        reinterpret_cast<const unsigned char*>(message.c_str()),
+        message.size()) <= 0
+    ) {
+        std::cerr << "Encryption failed: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(evp_public_key);
+        return "";
+    }
+
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(evp_public_key);
 
     return encrypted;
 }
@@ -73,7 +131,8 @@ std::string encrypt(const std::string& message, const std::string& public_key_pe
 
 void handle_request(
     http::request<http::string_body> const& req,
-    http::response<http::string_body>& res
+    http::response<http::string_body>& res,
+    std::string& config
 ) {
     if (req[http::field::content_type] != "application/json") {
         res.result(http::status::bad_request);
@@ -102,23 +161,16 @@ void handle_request(
         std::cout << "Public Key received: " << public_key << std::endl;
 
         if (verify_token(jwt_token, public_key)) {
-            std::string message = "Authenticated message";
-            std::string encrypted_message = encrypt(message, public_key);
+            std::string encrypted_config = encrypt(config, public_key);
 
-            if (!encrypted_message.empty()) {
-                res.body() = "Encrypted message: " + encrypted_message;
+            if (!encrypted_config.empty()) {
+                res.body() = encrypted_config;
             } else {
                 res.body() = "Failed to encrypt message";
             }
         } else {
             res.body() = "JWT verification failed";
         }
-
-        // auto decoded_token = jwt::decode(jwt_token);
-        // std::string payload = decoded_token.get_payload();
-
-        // res.body() = "JWT and Public Key received and processed";
-        
 
     } catch (const std::exception& e) {
         std::cerr << "Error decoding JWT: " << e.what() << std::endl;
@@ -130,8 +182,44 @@ void handle_request(
 }
 
 
+void do_accept(tcp::acceptor& acceptor, ssl::context& ctx, net::io_context& ioc, std::string& config) {
+    acceptor.async_accept([&](boost::system::error_code ec, tcp::socket socket) {
+        if (!ec) {
+            std::make_shared<std::thread>([&, socket = std::move(socket)]() mutable {
+                beast::ssl_stream<tcp::socket> stream(std::move(socket), ctx);
+                boost::system::error_code ec;
+                stream.handshake(ssl::stream_base::server, ec);
+
+                if (!ec) {
+                    beast::flat_buffer buffer;
+                    http::request<http::string_body> req;
+                    http::read(stream, buffer, req, ec);
+
+                    if (!ec) {
+                        http::response<http::string_body> res{http::status::ok, req.version()};
+                        handle_request(req, res, config);
+
+                        http::write(stream, res, ec);
+                    }
+                }
+
+                // Gracefully close the stream
+                stream.shutdown(ec);
+                if (ec && ec != beast::errc::not_connected) {
+                    std::cerr << "Shutdown failed: " << ec.message() << std::endl;
+                }
+            })->detach();
+        }
+
+        if (ec != net::error::operation_aborted) {
+            do_accept(acceptor, ctx, ioc, config);
+        }
+    });
+}
+
+
 int main() {
-    std::cout << "Hello from the server!" << std::endl;
+    std::cout << "Server started..." << std::endl;
 
     try {
         net::io_context ioc;
@@ -140,25 +228,30 @@ int main() {
         ctx.use_certificate_file("../cert.pem", ssl::context::pem);
         ctx.use_rsa_private_key_file("../key.pem", ssl::context::pem);
 
-        tcp::acceptor acceptor(ioc, {tcp::v4(), 4433});
-        bool shutdown_flag = false;
+        tcp::acceptor acceptor(ioc, {tcp::v4(), 4434});
 
-        while (!shutdown_flag) {
-            tcp::socket socket(ioc);
-            acceptor.accept(socket);
+        // Set up signal handling
+        net::signal_set signals(ioc, SIGINT, SIGTERM);
+        signals.async_wait([&](boost::system::error_code const&, int) {
+            std::cout << "Signal received, shutting down..." << std::endl;
+            acceptor.close(); // Close the acceptor to stop accepting new connections
+            ioc.stop(); // Stop the io_context
+        });
 
-            beast::ssl_stream<tcp::socket> stream(std::move(socket), ctx);
-            stream.handshake(ssl::stream_base::server);
+        fs::path root = "..";
+        fs::path data_dir = "data";
+        fs::path secrets_dir = "secrets";
+        fs::path file_name = "config.json";
 
-            beast::flat_buffer buffer;
-            http::request<http::string_body> req;
-            http::read(stream, buffer, req);
+        fs::path path = root / data_dir / secrets_dir / file_name;
 
-            http::response<http::string_body> res{http::status::ok, req.version()};
-            handle_request(req, res);
+        std::string config = get_config(path.string());
 
-            http::write(stream, res);
-        }
+        do_accept(acceptor, ctx, ioc, config);
+
+        ioc.run(); // Run the io_context to perform asynchronous operations
+
+        std::cout << "Server is shutting down..." << std::endl;
 
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
