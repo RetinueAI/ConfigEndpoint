@@ -11,11 +11,15 @@
 #include <jwt-cpp/jwt.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
+#include <openssl/aes.h>
 #include <openssl/evp.h>
 #include <openssl/err.h>
+#include <openssl/rand.h>
 #include <filesystem>
 #include <iostream>
 #include <fstream>
+#include <sstream>
+#include <iomanip>
 #include <string>
 #include <thread>
 #include <csignal>
@@ -29,7 +33,18 @@ namespace fs = std::filesystem;
 using tcp = net::ip::tcp;  
 
 
-std::string get_config(const std::string& file_path) {
+// Function to print a buffer as a hex string
+void print_hex(const unsigned char* buffer, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)buffer[i];
+    }
+    std::cout << std::dec << std::endl;
+}
+
+
+std::string get_config(
+    const std::string& file_path
+) {
     std::ifstream file(file_path);
     if (!file.is_open()) {
         throw std::runtime_error("Could not open JSON file");
@@ -40,13 +55,15 @@ std::string get_config(const std::string& file_path) {
     file.close();
 
     Json::StreamWriterBuilder writer;
-    std::string json_string = Json::writeString(writer, root);
 
-    return json_string;
+    return Json::writeString(writer, root);
 }
 
 
-bool verify_token(const std::string& token, const std::string& public_key) {
+bool verify_token(
+    const std::string& token, 
+    const std::string& public_key
+) {
     try {
         auto decoded_token = jwt::decode(token);
 
@@ -63,8 +80,93 @@ bool verify_token(const std::string& token, const std::string& public_key) {
 }
 
 
-std::string encrypt(const std::string& message, const std::string& public_key_pem) {
+bool generate_aes_key(
+    unsigned char* key, 
+    unsigned char* iv, 
+    int key_length
+) {
+    if (!RAND_bytes(key, key_length) || !RAND_bytes(iv, AES_BLOCK_SIZE)) {
+        std::cerr << "Failed to generate AES key or IV" << std::endl;
+        return false;
+    }
+    return true;
+}
+
+
+std::string base64_encode(
+    const std::string& input
+) {
+    BIO* bio = BIO_new(BIO_f_base64());
+    BIO* bmem = BIO_new(BIO_s_mem());
+    bio = BIO_push(bio, bmem);
+
+    BIO_write(bio, input.data(), input.size());
+    BIO_flush(bio);
+
+    BUF_MEM* bptr;
+    BIO_get_mem_ptr(bio, &bptr);
+
+    std::string output(bptr->data, bptr->length - 1);
+    BIO_free_all(bio);
+
+    return output;
+}
+
+
+std::string encrypt_aes(
+    const std::string& data, 
+    const unsigned char* key, 
+    unsigned char* iv
+) {
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) {
+        std::cerr << "Failed to create EVP_CIPHER_CTX" << std::endl;
+        return "";
+    }
+
+    int len;
+    int ciphertext_len;
+    unsigned char ciphertext[data.size() + AES_BLOCK_SIZE];
+
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, key, iv) != 1) {
+        std::cerr << "Failed to initialize AES Encyption" << std::endl;
+        EVP_CIPHER_CTX_free(ctx);
+        return "";
+    }
+
+    if (EVP_EncryptUpdate(ctx, ciphertext, &len, reinterpret_cast<const unsigned char*>(data.c_str()), data.size()) != 1) {
+        std::cerr << "Failed to encrypt data" << std::endl;
+        EVP_CIPHER_CTX_free(ctx);
+        return "";
+    }
+
+    ciphertext_len = len;
+
+    if (EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) != 1) {
+        std::cerr << "Failed to encrypt data" << std::endl;
+        EVP_CIPHER_CTX_free(ctx);
+        return "";
+    }
+
+    ciphertext_len += len;
+
+    EVP_CIPHER_CTX_free(ctx);
+
+    return std::string(reinterpret_cast<char*>(ciphertext), ciphertext_len);
+}
+
+
+std::string encrypt_rsa(
+    const std::string& data, 
+    const std::string& public_key_pem
+) {
     BIO* bio = BIO_new_mem_buf(public_key_pem.data(), -1);
+
+    if (!bio) {
+        std::cerr << "Failed to create BIO: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
+        return "";
+    }
+
     EVP_PKEY* evp_public_key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
 
@@ -99,8 +201,8 @@ std::string encrypt(const std::string& message, const std::string& public_key_pe
         ctx, 
         nullptr, 
         &outlen, 
-        reinterpret_cast<const unsigned char*>(message.c_str()),
-        message.size()) <= 0
+        reinterpret_cast<const unsigned char*>(data.c_str()),
+        data.size()) <= 0
     ) {
         std::cerr << "Failed to determine buffer length: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
         EVP_PKEY_CTX_free(ctx);
@@ -113,8 +215,8 @@ std::string encrypt(const std::string& message, const std::string& public_key_pe
         ctx,
         reinterpret_cast<unsigned char*>(&encrypted[0]),
         &outlen,
-        reinterpret_cast<const unsigned char*>(message.c_str()),
-        message.size()) <= 0
+        reinterpret_cast<const unsigned char*>(data.c_str()),
+        data.size()) <= 0
     ) {
         std::cerr << "Encryption failed: " << ERR_error_string(ERR_get_error(), nullptr) << std::endl;
         EVP_PKEY_CTX_free(ctx);
@@ -161,12 +263,44 @@ void handle_request(
         std::cout << "Public Key received: " << public_key << std::endl;
 
         if (verify_token(jwt_token, public_key)) {
-            std::string encrypted_config = encrypt(config, public_key);
+            unsigned char sym_key[32];
+            unsigned char iv[AES_BLOCK_SIZE];
 
-            if (!encrypted_config.empty()) {
-                res.body() = encrypted_config;
+
+            if (generate_aes_key(sym_key, iv, sizeof(sym_key))) {
+                std::cout << "Generated AES key: ";
+                print_hex(sym_key, sizeof(sym_key));
+                std::cout << "Generated IV: ";
+                print_hex(iv, AES_BLOCK_SIZE);
             } else {
-                res.body() = "Failed to encrypt message";
+                std::cerr << "Failed to generate AES key and IV" << std::endl;
+                return;
+            }
+
+
+            // if (!generate_aes_key(sym_key, iv, sizeof(sym_key))) {
+            //     res.body() = "Failed to generate symetrical key";
+            //     res.prepare_payload();
+            //     return;
+            // }
+
+            std::string encrypted_config = encrypt_aes(config, sym_key, iv);
+            std::string encrypted_key = encrypt_rsa(std::string(reinterpret_cast<char*>(sym_key), sizeof(sym_key)), public_key);
+            // std::string message = "Test message";
+
+            if (!encrypted_config.empty() && !encrypted_key.empty()) {
+                Json::Value response;
+                response["encrypted_key"] = base64_encode(encrypted_key);
+                response["iv"] = base64_encode(std::string(reinterpret_cast<char*>(iv), AES_BLOCK_SIZE));
+                response["encrypted_config"] = base64_encode(encrypted_config);
+
+                // response["encrypted_key"] = base64_encode(encrypt_rsa(message, public_key));
+
+                Json::StreamWriterBuilder writer;
+
+                res.body() = Json::writeString(writer, response);
+            } else {
+                res.body() = "Failed to encrypt content";
             }
         } else {
             res.body() = "JWT verification failed";
@@ -177,12 +311,17 @@ void handle_request(
         res.body() = "Invalid JWT";
     }
 
-    res.set(http::field::content_type, "text/plain");
+    res.set(http::field::content_type, "application/json");
     res.prepare_payload();
 }
 
 
-void do_accept(tcp::acceptor& acceptor, ssl::context& ctx, net::io_context& ioc, std::string& config) {
+void do_accept(
+    tcp::acceptor& acceptor, 
+    ssl::context& ctx, 
+    net::io_context& ioc, 
+    std::string& config
+) {
     acceptor.async_accept([&](boost::system::error_code ec, tcp::socket socket) {
         if (!ec) {
             std::make_shared<std::thread>([&, socket = std::move(socket)]() mutable {
@@ -203,7 +342,6 @@ void do_accept(tcp::acceptor& acceptor, ssl::context& ctx, net::io_context& ioc,
                     }
                 }
 
-                // Gracefully close the stream
                 stream.shutdown(ec);
                 if (ec && ec != beast::errc::not_connected) {
                     std::cerr << "Shutdown failed: " << ec.message() << std::endl;
@@ -228,14 +366,13 @@ int main() {
         ctx.use_certificate_file("../cert.pem", ssl::context::pem);
         ctx.use_rsa_private_key_file("../key.pem", ssl::context::pem);
 
-        tcp::acceptor acceptor(ioc, {tcp::v4(), 4434});
+        tcp::acceptor acceptor(ioc, {tcp::v4(), 4433});
 
-        // Set up signal handling
         net::signal_set signals(ioc, SIGINT, SIGTERM);
         signals.async_wait([&](boost::system::error_code const&, int) {
             std::cout << "Signal received, shutting down..." << std::endl;
-            acceptor.close(); // Close the acceptor to stop accepting new connections
-            ioc.stop(); // Stop the io_context
+            acceptor.close();
+            ioc.stop(); 
         });
 
         fs::path root = "..";
@@ -249,7 +386,7 @@ int main() {
 
         do_accept(acceptor, ctx, ioc, config);
 
-        ioc.run(); // Run the io_context to perform asynchronous operations
+        ioc.run();
 
         std::cout << "Server is shutting down..." << std::endl;
 
