@@ -35,7 +35,7 @@
 
 
 /**
- * @brief Main entry point of the Secure Config Server.
+ * @brief Main entry point of the Config Endpoint.
  *
  * Initializes and runs the secure server with the following tasks:
  * - Sets up the I/O context and SSL/TLS context for asynchronous operations and secure communication.
