@@ -4,7 +4,7 @@
  *
  * This file contains the main function for the Secure Config Server, a C++ application that securely delivers encrypted configuration data to authorized clients over a network. 
  * The server uses SSL/TLS for secure communication, JWT for client authentication, and a hybrid encryption approach (AES for symmetric encryption and RSA for key exchange) 
-* to ensure data confidentiality and integrity. For detailed setup and usage instructions, refer to the README.md file.
+ * to ensure data confidentiality and integrity. For detailed setup and usage instructions, refer to the README.md file.
  */
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
