@@ -33,7 +33,7 @@ namespace fs = std::filesystem;
 using tcp = net::ip::tcp;  
 
 
-// Function to print a buffer as a hex string
+
 void print_hex(const unsigned char* buffer, size_t length) {
     for (size_t i = 0; i < length; ++i) {
         std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)buffer[i];
