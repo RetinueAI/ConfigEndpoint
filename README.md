@@ -111,8 +111,8 @@ Contributions are welcome! Please fork the repository, make your changes, and su
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE.txt) file for details.
 
-## Authors
+## Contact
 
-- [@mariushanssen](https://x.com/mariushanssen)
+For any questions or feedback, contact marius.hanssen@retinueai.com or josefjameshard@retinueai.com
