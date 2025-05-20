@@ -1,8 +1,8 @@
-# Secure Config Server
+# Config Endpoint
 
 ## Description
 
-This project implements a secure server that delivers encrypted configuration data to authorized clients over a network. It uses SSL/TLS for secure communication, JWT for authentication, and a hybrid encryption approach (AES for symmetric encryption and RSA for key exchange) to ensure the confidentiality and integrity of the data.
+This project implements a secure server that delivers encrypted configuration data to authorized clients over a network. It uses SSL/TLS for secure communication, JWT for authentication, and a hybrid encryption approach (AES for symmetric encryption and RSA for key exchange) to ensure the confidentiality and integrity of the data. This is used as part of our AI agent application Mimir.
 
 ## Table of Contents
 
