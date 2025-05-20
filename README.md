@@ -12,7 +12,7 @@ This project implements a secure server that delivers encrypted configuration da
 - [Security Considerations](#security-considerations)
 - [Contributing](#contributing)
 - [License](#license)
-- [Authors](#authors)
+- [Contact](#contact)
 
 ## Installation
 
