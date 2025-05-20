@@ -1,3 +1,11 @@
+/**
+ * @file main.cpp
+ * @brief Secure Config Server Main File
+ *
+ * This file contains the main function for the Secure Config Server, a C++ application that securely delivers encrypted configuration data to authorized clients over a network. 
+ * The server uses SSL/TLS for secure communication, JWT for client authentication, and a hybrid encryption approach (AES for symmetric encryption and RSA for key exchange) 
+* to ensure data confidentiality and integrity. For detailed setup and usage instructions, refer to the README.md file.
+ */
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
@@ -25,14 +33,31 @@
 #include <csignal>
 
 
+
+/**
+ * @brief Main entry point of the Secure Config Server.
+ *
+ * Initializes and runs the secure server with the following tasks:
+ * - Sets up the I/O context and SSL/TLS context for asynchronous operations and secure communication.
+ * - Loads SSL/TLS certificates and private keys from `cert.pem` and `key.pem`.
+ * - Configures a TCP acceptor to listen on port 4433 for incoming connections.
+ * - Sets up signal handling for graceful shutdown on SIGINT or SIGTERM.
+ * - Loads configuration data from `data/secrets/config.json`.
+ * - Accepts incoming connections and processes requests asynchronously by:
+ *   - Verifying client JWT tokens.
+ *   - Encrypting configuration data using AES-256 and RSA.
+ *   - Sending encrypted responses with configuration, AES key, and IV.
+ * - Runs the I/O context in a multi-threaded environment for concurrent connections.
+ * - Manages server shutdown by stopping the acceptor and I/O context.
+ *
+ * @return int Exit status of the program (0 for success, non-zero for failure).
+ */
 namespace beast = boost::beast;
 namespace http = beast::http;     
 namespace net = boost::asio;      
 namespace ssl = net::ssl;
 namespace fs = std::filesystem;
 using tcp = net::ip::tcp;  
-
-
 
 void print_hex(const unsigned char* buffer, size_t length) {
     for (size_t i = 0; i < length; ++i) {
